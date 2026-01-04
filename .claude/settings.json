@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pre-commit run ruff-check --files \"$CLAUDE_FILE_PATH\" || true; pre-commit run ruff-format --files \"$CLAUDE_FILE_PATH\" || true; pre-commit run prettier --files \"$CLAUDE_FILE_PATH\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}
