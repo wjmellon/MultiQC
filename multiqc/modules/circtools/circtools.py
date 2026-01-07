@@ -22,7 +22,7 @@ class MultiqcModule(BaseMultiqcModule):
             name="circtools",
             anchor="circtools",
             href="https://github.com/jakobilab/circtools",
-            info="Circtools Detect.",
+            info="Produced by circtools",
         )
 
         data_by_sample: Dict[str, Dict[str, float]] = {}
