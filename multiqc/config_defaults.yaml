@@ -630,6 +630,7 @@ module_order:
   - ataqv
   - mgikit
   - mosaicatcher
+  - circtools
 
 # Preserves `saved_raw_data` section in modules - default for interactive runs
 preserve_module_raw_data: false

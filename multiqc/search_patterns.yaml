@@ -1111,3 +1111,7 @@ ataqv:
   num_lines: 10
 mosaicatcher:
   fn: "*.mosaicatcher_info_raw.txt"
+circtools/detect:
+  fn: "CircRNACount"
+  num_lines: 5
+
