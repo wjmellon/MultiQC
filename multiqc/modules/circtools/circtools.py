@@ -140,8 +140,12 @@ def parse_circrnacount(f) -> Dict[str, Dict[str, float]]:
             header = cols
             sample_names = [
                 s.replace(".Chimeric.out.junction", "")
+                .replace("_Chimeric.out.junction", "")
+                .replace(".Chimeric", "")
+                .replace("_Chimeric", "")
                 for s in header[4:]
             ]
+
 
             for s in sample_names:
                 tmp[s] = []
