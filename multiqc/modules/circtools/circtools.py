@@ -67,40 +67,49 @@ class MultiqcModule(BaseMultiqcModule):
     def stats_tables(self, data_by_sample: Dict[str, Dict[str, float]]) -> None:
         headers = {
             "num_detected_circRNAs": {
+                "namespace": "circtools",  # <-- important: prevents “smushing”
                 "title": "circRNAs",
                 "description": "Detected circRNAs (>0 BSJ reads)",
                 "scale": "Blues",
+                "hidden": False,  # show by default
             },
             "total_circRNA_reads": {
+                "namespace": "circtools",
                 "title": "circRNA reads",
-                "description": "Total backsplice junction reads",
+                "description": "Total backsplice junction reads (BSJ)",
                 "scale": "PuRd",
-                "format": "{:,.0f}",   # <-- show raw counts
+                "format": "{:,.0f}",
+                "hidden": False,  # show by default
             },
             "mean_circRNA_reads": {
+                "namespace": "circtools",
                 "title": "Mean BSJ",
-                "description": "Mean BSJ reads per circRNA",
+                "description": "Mean BSJ reads per detected circRNA",
                 "format": "{:.2f}",
                 "scale": "OrRd",
                 "hidden": True,
             },
             "median_circRNA_reads": {
+                "namespace": "circtools",
                 "title": "Median BSJ",
-                "description": "Median BSJ reads per circRNA",
+                "description": "Median BSJ reads per detected circRNA",
                 "format": "{:.1f}",
                 "scale": "OrRd",
                 "hidden": True,
             },
             "max_circRNA_reads": {
+                "namespace": "circtools",
                 "title": "Max BSJ",
-                "description": "Maximum BSJ reads for a circRNA",
+                "description": "Maximum BSJ reads for a single circRNA",
                 "scale": "Reds",
                 "hidden": True,
             },
         }
 
-        self.general_stats_addcols(data_by_sample, headers)
+        # General Stats: add just the circtools columns
+        self.general_stats_addcols(data_by_sample, headers, namespace="circtools")
 
+        # Module table section: keep full table in the circtools section
         self.add_section(
             name="Summary Statistics",
             anchor="circtools_summary",
@@ -111,9 +120,11 @@ class MultiqcModule(BaseMultiqcModule):
                 pconfig={
                     "id": "circtools_summary_table",
                     "title": "circtools: Summary Statistics",
+                    "namespace": "circtools",
                 },
             ),
         )
+
 
 
 # ------------------------------------------------------------------
