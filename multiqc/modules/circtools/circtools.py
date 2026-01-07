@@ -28,6 +28,10 @@ class MultiqcModule(BaseMultiqcModule):
         data_by_sample: Dict[str, Dict[str, float]] = {}
 
         for f in self.find_log_files("circtools/detect", filehandles=True):
+            #ignore output from a circtools.cloud run
+            if f["fn"].endswith("CircRNACountName.txt"):
+                continue
+
             parsed_samples = parse_circrnacount(f)
             if not parsed_samples:
                 continue
