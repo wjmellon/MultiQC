@@ -1114,4 +1114,7 @@ mosaicatcher:
 circtools/detect:
   fn: "CircRNACount"
   num_lines: 5
+circtools/detect/linear:
+  fn: "LinearCount"
+  num_lines: 5
 

@@ -1,11 +1,49 @@
 import logging
+import re
 import numpy as np
-from typing import Dict
+from typing import Dict, Optional
 
 from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
-from multiqc.plots import bargraph, table
+from multiqc.plots import bargraph, table, scatter
 
 log = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _clean_circtools_column_name(raw: str) -> str:
+    return (
+        raw.replace(".Chimeric.out.junction", "")
+           .replace("_Chimeric.out.junction", "")
+           .replace(".Chimeric", "")
+           .replace("_Chimeric", "")
+    )
+
+
+# ------------------------------------------------------------------
+# STAR parser (simplified, file-contents based)
+# ------------------------------------------------------------------
+
+def parse_star_report(contents: str) -> Optional[Dict[str, float]]:
+    regexes = {
+        "total_reads": r"Number of input reads \|\s+(\d+)",
+        "uniquely_mapped": r"Uniquely mapped reads number \|\s+(\d+)",
+        "multimapped": r"Number of reads mapped to multiple loci \|\s+(\d+)",
+        "multimapped_toomany": r"Number of reads mapped to too many loci \|\s+(\d+)",
+    }
+
+    parsed: Dict[str, float] = {}
+    for key, rgx in regexes.items():
+        m = re.search(rgx, contents, re.MULTILINE)
+        if m:
+            parsed[key] = float(m.group(1))
+
+    if not parsed:
+        return None
+
+    parsed["mapped"] = parsed.get("uniquely_mapped", 0) + parsed.get("multimapped", 0)
+    return parsed
 
 
 # ------------------------------------------------------------------
@@ -25,59 +63,79 @@ class MultiqcModule(BaseMultiqcModule):
             info="Produced by circtools",
         )
 
+        # --------------------------------------------------
+        # Parse circRNA counts
+        # --------------------------------------------------
         data_by_sample: Dict[str, Dict[str, float]] = {}
-        
-        
-        star_stats = self.general_stats_data
-
-        for sample, metrics in data_by_sample.items():
-            unique = (
-                star_stats
-                .get(sample, {})
-                .get("uniquely_mapped")
-            )
-
-            if unique and unique > 0:
-                metrics["circRNAs_per_million_unique"] = (
-                    metrics["num_detected_circRNAs"] / (unique / 1e6)
-                )
-            else:
-                metrics["circRNAs_per_million_unique"] = np.nan
-
 
         for f in self.find_log_files("circtools/detect", filehandles=True):
-            #ignore output from a circtools.cloud run
             if f["fn"].endswith("CircRNACountName.txt"):
                 continue
 
-            parsed_samples = parse_circrnacount(f)
-            if not parsed_samples:
-                continue
-
-            for s_name, metrics in parsed_samples.items():
-                if s_name in data_by_sample:
-                    log.debug(f"Duplicate sample name found! Overwriting: {s_name}")
-
-                data_by_sample[s_name] = metrics
+            parsed = self.parse_circrnacount(f)
+            for s, metrics in parsed.items():
+                data_by_sample[s] = metrics
                 self.add_data_source(f, section="CircRNACount")
-                self.add_software_version(None, sample=s_name)
+
+        # --------------------------------------------------
+        # Parse linear counts
+        # --------------------------------------------------
+        linear_by_sample: Dict[str, int] = {}
+
+        for f in self.find_log_files("circtools/detect/linear", filehandles=True):
+            parsed = self.parse_linearcount(f)
+            linear_by_sample.update(parsed)
+
+        for s in data_by_sample:
+            data_by_sample[s]["total_linear_reads"] = linear_by_sample.get(s, np.nan)
 
         data_by_sample = self.ignore_samples(data_by_sample)
         if not data_by_sample:
             raise ModuleNoSamplesFound
 
-        log.info(f"Found {len(data_by_sample)} circtools samples")
+        # --------------------------------------------------
+        # Parse STAR logs
+        # --------------------------------------------------
+        star_by_sample: Dict[str, Dict[str, float]] = {}
 
+        for f in self.find_log_files("star"):
+            parsed = parse_star_report(f["f"])
+            if parsed:
+                star_by_sample[f["s_name"]] = parsed
+
+        # --------------------------------------------------
+        # Derived metrics
+        # --------------------------------------------------
+        for s, d in data_by_sample.items():
+            uniq = star_by_sample.get(s, {}).get("uniquely_mapped")
+            if uniq and uniq > 0:
+                d["circRNAs_per_million_unique"] = d["num_detected_circRNAs"] / (uniq / 1e6)
+            else:
+                d["circRNAs_per_million_unique"] = np.nan
+
+        # --------------------------------------------------
+        # Output
+        # --------------------------------------------------
         self.write_data_file(data_by_sample, "multiqc_circtools")
         self.stats_tables(data_by_sample)
 
         self.add_section(
-            name="circRNA Detection",
-            anchor="circtools_detection",
+            name="circRNAs per Million Unique Reads",
+            anchor="circtools_norm",
             plot=circtools_detection_plot(data_by_sample),
         )
-        
-        
+
+        self.add_section(
+            name="Circular vs Linear Reads",
+            anchor="circtools_circ_vs_linear",
+            plot=circ_vs_linear_plot(data_by_sample),
+        )
+
+        self.add_section(
+            name="Unique Reads vs Detected circRNAs",
+            anchor="circtools_unique_vs_circs",
+            plot=unique_vs_circs_plot(data_by_sample, star_by_sample),
+        )
 
     # ------------------------------------------------------------------
     # Tables
@@ -85,54 +143,10 @@ class MultiqcModule(BaseMultiqcModule):
 
     def stats_tables(self, data_by_sample: Dict[str, Dict[str, float]]) -> None:
         headers = {
-            "num_detected_circRNAs": {
-                "namespace": "circtools",
-                "title": "circRNAs",
-                "description": "Detected circRNAs (>0 BSJ reads)",
-                "scale": "Blues",
-                "hidden": False,
-            },
-            "total_circRNA_reads": {
-                "namespace": "circtools",
-                "title": "circRNA reads",
-                "description": "Total backsplice junction reads (BSJ)",
-                "scale": "PuRd",
-                "format": "{:,.0f}",
-                "hidden": False,
-            },
-            "mean_circRNA_reads": {
-                "namespace": "circtools",
-                "title": "Mean BSJ",
-                "description": "Mean BSJ reads per detected circRNA",
-                "format": "{:.2f}",
-                "scale": "OrRd",
-                "hidden": True,
-            },
-            "median_circRNA_reads": {
-                "namespace": "circtools",
-                "title": "Median BSJ",
-                "description": "Median BSJ reads per detected circRNA",
-                "format": "{:.1f}",
-                "scale": "OrRd",
-                "hidden": True,
-            },
-            "max_circRNA_reads": {
-                "namespace": "circtools",
-                "title": "Max BSJ",
-                "description": "Maximum BSJ reads for a single circRNA",
-                "scale": "Reds",
-                "hidden": True,
-            },
-            
-            "circRNAs_per_million_unique": {
-                "namespace": "circtools",
-                "title": "circRNAs / M uniq",
-                "description": "Detected circRNAs per million uniquely mapped reads",
-                "format": "{:.0f}",
-                "scale": "YlGnBu",
-                "hidden": False,
-            },
-
+            "num_detected_circRNAs": {"title": "circRNAs"},
+            "total_circRNA_reads": {"title": "circRNA reads"},
+            "total_linear_reads": {"title": "Linear reads"},
+            "circRNAs_per_million_unique": {"title": "circRNAs / M uniq"},
         }
 
         self.general_stats_addcols(data_by_sample, headers, namespace="circtools")
@@ -140,73 +154,96 @@ class MultiqcModule(BaseMultiqcModule):
         self.add_section(
             name="Summary Statistics",
             anchor="circtools_summary",
-            description="Summary statistics from circtools detect (CircRNACount).",
             plot=table.plot(
                 data_by_sample,
                 headers,
                 pconfig={
                     "id": "circtools_summary_table",
                     "title": "circtools: Summary Statistics",
-                    "namespace": "circtools",
                 },
             ),
         )
 
+    # ------------------------------------------------------------------
+    # Parsers (instance methods – REQUIRED)
+    # ------------------------------------------------------------------
 
-# ------------------------------------------------------------------
-# Parsers
-# ------------------------------------------------------------------
+    def parse_linearcount(self, f) -> Dict[str, int]:
+        header = None
+        sample_names: list[str] = []
+        tmp: Dict[str, list[int]] = {}
 
-def parse_circrnacount(f) -> Dict[str, Dict[str, float]]:
-    header = None
-    sample_names = []
-    tmp: Dict[str, list] = {}
-
-    for line in f["f"]:
-        line = line.strip()
-        if not line:
-            continue
-
-        cols = line.split("\t")
-
-        # Header
-        if header is None:
-            header = cols
-            sample_names = [
-                s.replace(".Chimeric.out.junction", "")
-                .replace("_Chimeric.out.junction", "")
-                .replace(".Chimeric", "")
-                .replace("_Chimeric", "")
-                for s in header[4:]
-            ]
-
-
-            for s in sample_names:
-                tmp[s] = []
-            continue
-
-        # Data
-        for i, s in enumerate(sample_names):
-            try:
-                tmp[s].append(int(cols[4 + i]))
-            except (ValueError, IndexError):
+        for line in f["f"]:
+            cols = line.rstrip().split("\t")
+            if not cols:
                 continue
 
-    out: Dict[str, Dict[str, float]] = {}
-    for s, values in tmp.items():
-        if not values:
-            continue
+            # Header
+            if header is None:
+                header = cols
+                sample_names = [
+                    self.clean_s_name(_clean_circtools_column_name(s), f)
+                    for s in header[3:]   # ← linear starts after Chr/Start/End
+                ]
+                for s in sample_names:
+                    tmp[s] = []
+                continue
 
-        arr = np.array(values)
-        out[s] = {
-            "total_circRNA_reads": int(arr.sum()),
-            "num_detected_circRNAs": int((arr > 0).sum()),
-            "mean_circRNA_reads": float(arr.mean()),
-            "median_circRNA_reads": float(np.median(arr)),
-            "max_circRNA_reads": int(arr.max()),
-        }
+            # Data rows
+            for i, s in enumerate(sample_names):
+                try:
+                    tmp[s].append(int(cols[3 + i]))
+                except (ValueError, IndexError):
+                    pass
 
-    return out
+        # Sum per sample
+        return {s: int(np.sum(v)) for s, v in tmp.items() if v}
+
+
+
+
+    def parse_circrnacount(self, f) -> Dict[str, Dict[str, float]]:
+        header = None
+        sample_names: list[str] = []
+        tmp: Dict[str, list[int]] = {}
+
+        for line in f["f"]:
+            cols = line.rstrip().split("\t")
+            if not cols:
+                continue
+
+            # Header
+            if header is None:
+                header = cols
+                sample_names = [
+                    self.clean_s_name(_clean_circtools_column_name(s), f)
+                    for s in header[4:]
+                ]
+                for s in sample_names:
+                    tmp[s] = []
+                continue
+
+            # Data
+            for i, s in enumerate(sample_names):
+                try:
+                    tmp[s].append(int(cols[4 + i]))
+                except Exception:
+                    pass
+
+        out: Dict[str, Dict[str, float]] = {}
+        for s, vals in tmp.items():
+            if not vals:
+                continue
+
+            arr = np.array(vals)
+            out[s] = {
+                "total_circRNA_reads": int(arr.sum()),
+                "num_detected_circRNAs": int((arr > 0).sum()),
+            }
+
+        return out
+
+
 
 
 # ------------------------------------------------------------------
@@ -222,11 +259,54 @@ def circtools_detection_plot(data_by_sample):
     }
 
     pconfig = {
-        "id": "circtools_norm_circRNAs",
-        "title": "circtools: circRNAs per Million Unique Reads",
+        "id": "circtools_norm_bar_v2",  
+        "title": "Detected circRNAs per Million Unique Reads",
         "ylab": "circRNAs / million reads",
         "cpswitch_counts_label": "circRNAs per million unique reads",
     }
 
     return bargraph.plot(data_by_sample, keys, pconfig)
+
+
+
+
+def circ_vs_linear_plot(data_by_sample):
+    plot_data = {
+        s: {"x": d["total_circRNA_reads"], "y": d["total_linear_reads"]}
+        for s, d in data_by_sample.items()
+        if d.get("total_circRNA_reads") is not None
+        and d.get("total_linear_reads") is not None
+    }
+
+    return scatter.plot(
+        plot_data,
+        pconfig={
+            "id": "circtools_circ_vs_linear_scatter_v2",  
+            "title": "Circular vs Linear Read Counts",
+            "xlab": "Circular reads (BSJ)",
+            "ylab": "Linear reads",
+            "xlog": True,
+            "ylog": True,
+        },
+    )
+
+
+
+def unique_vs_circs_plot(data_by_sample, star_by_sample):
+    plot_data = {
+        s: {"x": star_by_sample[s]["uniquely_mapped"], "y": d["num_detected_circRNAs"]}
+        for s, d in data_by_sample.items()
+        if s in star_by_sample and "uniquely_mapped" in star_by_sample[s]
+    }
+
+    return scatter.plot(
+        plot_data,
+        pconfig={
+            "id": "circtools_unique_vs_circs_scatter_v2", 
+            "title": "Unique Reads vs Detected circRNAs",
+            "xlab": "Uniquely mapped reads",
+            "ylab": "Detected circRNAs",
+        },
+    )
+
 
