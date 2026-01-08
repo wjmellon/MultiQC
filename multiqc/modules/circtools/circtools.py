@@ -26,6 +26,24 @@ class MultiqcModule(BaseMultiqcModule):
         )
 
         data_by_sample: Dict[str, Dict[str, float]] = {}
+        
+        
+        star_stats = self.general_stats_data
+
+        for sample, metrics in data_by_sample.items():
+            unique = (
+                star_stats
+                .get(sample, {})
+                .get("uniquely_mapped")
+            )
+
+            if unique and unique > 0:
+                metrics["circRNAs_per_million_unique"] = (
+                    metrics["num_detected_circRNAs"] / (unique / 1e6)
+                )
+            else:
+                metrics["circRNAs_per_million_unique"] = np.nan
+
 
         for f in self.find_log_files("circtools/detect", filehandles=True):
             #ignore output from a circtools.cloud run
@@ -58,6 +76,8 @@ class MultiqcModule(BaseMultiqcModule):
             anchor="circtools_detection",
             plot=circtools_detection_plot(data_by_sample),
         )
+        
+        
 
     # ------------------------------------------------------------------
     # Tables
@@ -103,6 +123,16 @@ class MultiqcModule(BaseMultiqcModule):
                 "scale": "Reds",
                 "hidden": True,
             },
+            
+            "circRNAs_per_million_unique": {
+                "namespace": "circtools",
+                "title": "circRNAs / M uniq",
+                "description": "Detected circRNAs per million uniquely mapped reads",
+                "format": "{:.0f}",
+                "scale": "YlGnBu",
+                "hidden": False,
+            },
+
         }
 
         self.general_stats_addcols(data_by_sample, headers, namespace="circtools")
@@ -185,17 +215,18 @@ def parse_circrnacount(f) -> Dict[str, Dict[str, float]]:
 
 def circtools_detection_plot(data_by_sample):
     keys = {
-        "num_detected_circRNAs": {
-            "color": "#437bb1",
-            "name": "Detected circRNAs"
-        },
+        "circRNAs_per_million_unique": {
+            "color": "#3874c8",
+            "name": "circRNAs per million uniquely mapped reads",
+        }
     }
 
     pconfig = {
-        "id": "circtools_detection_plot",
-        "title": "circtools: circRNA Detection",
-        "ylab": "Count",
-        "cpswitch_counts_label": "Number of circRNAs",
+        "id": "circtools_norm_circRNAs",
+        "title": "circtools: circRNAs per Million Unique Reads",
+        "ylab": "circRNAs / million reads",
+        "cpswitch_counts_label": "circRNAs per million unique reads",
     }
 
     return bargraph.plot(data_by_sample, keys, pconfig)
+
